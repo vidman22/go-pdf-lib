@@ -133,6 +133,11 @@ func NewReader(f io.ReaderAt, size int64) (*Reader, error) {
 func NewReaderEncrypted(f io.ReaderAt, size int64, pw func() string) (*Reader, error) {
 	buf := make([]byte, 10)
 	f.ReadAt(buf, 0)
+	// Some PDF generators write a space before the newline in the header.
+	// Normalize space to newline for the header check.
+	if buf[8] == ' ' {
+		buf[8] = '\n'
+	}
 	if !bytes.HasPrefix(buf, []byte("%PDF-1.")) || buf[7] < '0' || buf[7] > '7' || buf[8] != '\r' && buf[8] != '\n' {
 		return nil, fmt.Errorf("not a PDF file: invalid header")
 	}
