@@ -11,6 +11,22 @@ The upstream library fails to extract text from PDFs that have malformed CMap (c
 
 The upstream library's `cmap.Decode()` function only looks up character mappings if the byte falls within a declared codespace range. Characters outside the codespace are replaced with the Unicode replacement character, resulting in garbled text output.
 
+### In Simple Terms
+
+**Without the patch**, extracting text from affected PDFs produces garbage:
+```
+��������� ������ - �����
+���������� �����*:                    ��� ��/��
+```
+
+**With the patch**, you get the actual text:
+```
+Glyphosate Profile - Urine
+Creatinine Value*:                    100 mg/dl
+```
+
+The fix allows the library to find character mappings even when the PDF's internal character map is technically malformed.
+
 ## Changes From Upstream
 
 **File: `page.go`** - Modified `cmap.Decode()` function
