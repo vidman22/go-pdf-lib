@@ -7,32 +7,23 @@ on:
 
 jobs:
   release:
-    if: ${{ !contains(github.event.head_commit.message, 'norelease') }}
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: true
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
 
-    - name: Install dependencies
-      run: go mod download
+      - name: Test
+        run: go test -v ./...
 
-    - name: Run tests
-      run: go test -v ./...
+      - name: Build
+        run: go build -v ./...
 
-    - name: Build
-      run: go build -v ./...
-
-    - name: Create tag
-      uses: mathieudutour/github-tag-action@v6.1
-      id: create_tag
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        fetch_all_tags: true
+      - name: Bump version and push tag
+        uses: mathieudutour/github-tag-action@v6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          release_branches: main
