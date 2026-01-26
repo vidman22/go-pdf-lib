@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/ledongthuc/pdf"
+	"github.com/superpowerdotcom/go-pdf-lib"
 )
 
 func main() {
