@@ -1,138 +1,103 @@
-# PDF Reader
+# PDF Reader (Superpower Fork)
 
-[![Built with WeBuild](https://raw.githubusercontent.com/webuild-community/badge/master/svg/WeBuild.svg)](https://webuild.community)
+Fork of [github.com/ledongthuc/pdf](https://github.com/ledongthuc/pdf) with fixes for malformed PDF CMap handling.
 
-A simple Go library which enables reading PDF files. Forked from https://github.com/rsc/pdf
+## Why This Fork Exists
 
-Features
-  - Get plain text content (without format)
-  - Get Content (including all font and formatting information)
+The upstream library fails to extract text from PDFs that have malformed CMap (character mapping) definitions. Specifically, some PDF generators create CMaps where:
 
-## Install:
+- The **codespace range** is defined too narrowly (e.g., `<51>` to `<79>`)
+- But the **bfrange mappings** include characters outside that range (e.g., `<20>` for space, `<30>` for digit 0)
 
-`go get -u github.com/ledongthuc/pdf`
+The upstream library's `cmap.Decode()` function only looks up character mappings if the byte falls within a declared codespace range. Characters outside the codespace are replaced with the Unicode replacement character, resulting in garbled text output.
 
-## Examples:
+## Changes From Upstream
 
- - Check in examples/ folder
+**File: `page.go`** - Modified `cmap.Decode()` function
 
+Added a fallback that tries bfchar/bfrange lookups even when bytes are outside the declared codespace. This handles malformed CMaps that define mappings outside their declared codespace range.
 
-## Read plain text
+```go
+// After the codespace loop fails, try bfchar/bfrange lookups for single-byte
+// codes even when outside the declared codespace. Some PDFs have malformed
+// CMaps where the codespace range is too narrow but bfrange mappings exist.
+```
+
+## Install
+
+```bash
+go get -u github.com/superpowerdotcom/go-pdf-lib
+```
+
+## Usage
 
 ```golang
 package main
 
 import (
-	"bytes"
-	"fmt"
+    "bytes"
+    "fmt"
 
-	"github.com/ledongthuc/pdf"
+    pdf "github.com/superpowerdotcom/go-pdf-lib"
 )
 
 func main() {
-	pdf.DebugOn = true
+    f, r, err := pdf.Open("./test.pdf")
+    if err != nil {
+        panic(err)
+    }
+    defer f.Close()
 
-	f, r, err := pdf.Open("./pdf_test.pdf")
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-
-	var buf bytes.Buffer
-	b, err := r.GetPlainText()
-	if err != nil {
-		panic(err)
-	}
-	buf.ReadFrom(b)
-	content := buf.String()
-	fmt.Println(content)
+    var buf bytes.Buffer
+    b, err := r.GetPlainText()
+    if err != nil {
+        panic(err)
+    }
+    buf.ReadFrom(b)
+    fmt.Println(buf.String())
 }
 ```
 
-## Read all text with styles from PDF
+## Read Text By Row (preserves layout)
 
 ```golang
 package main
 
 import (
-	"fmt"
+    "fmt"
 
-	"github.com/ledongthuc/pdf"
+    pdf "github.com/superpowerdotcom/go-pdf-lib"
 )
 
 func main() {
-	f, r, err := pdf.Open("./pdf_test.pdf")
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
+    f, r, err := pdf.Open("./test.pdf")
+    if err != nil {
+        panic(err)
+    }
+    defer f.Close()
 
-	sentences, err := r.GetStyledTexts()
-	if err != nil {
-		panic(err)
-	}
+    p := r.Page(1)
+    rows, err := p.GetTextByRow()
+    if err != nil {
+        panic(err)
+    }
 
-	// Print all sentences
-	for _, sentence := range sentences {
-		fmt.Printf("Font: %s, Font-size: %f, x: %f, y: %f, content: %s \n",
-			sentence.Font,
-			sentence.FontSize,
-			sentence.X,
-			sentence.Y,
-			sentence.S)
-	}
+    for _, row := range rows {
+        fmt.Printf("Y=%.1f: ", row.Content[0].Y)
+        for _, word := range row.Content {
+            fmt.Print(word.S, " ")
+        }
+        fmt.Println()
+    }
 }
 ```
 
+## Original Features
 
-## Read text grouped by rows
+- Get plain text content (without format)
+- Get Content (including all font and formatting information)
+- Get text grouped by rows or columns
 
-```golang
-package main
+## License
 
-import (
-	"fmt"
-	"os"
-
-	"github.com/ledongthuc/pdf"
-)
-
-func main() {
-	content, err := readPdf(os.Args[1]) // Read local pdf file
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(content)
-	return
-}
-
-func readPdf(path string) (string, error) {
-	f, r, err := pdf.Open(path)
-	defer func() {
-		_ = f.Close()
-	}()
-	if err != nil {
-		return "", err
-	}
-	totalPage := r.NumPage()
-
-	for pageIndex := 1; pageIndex <= totalPage; pageIndex++ {
-		p := r.Page(pageIndex)
-		if p.V.IsNull() || p.V.Key("Contents").Kind() == pdf.Null {
-			continue
-		}
-
-		rows, _ := p.GetTextByRow()
-		for _, row := range rows {
-		    println(">>>> row: ", row.Position)
-		    for _, word := range row.Content {
-		        fmt.Println(word.S)
-		    }
-		}
-	}
-	return "", nil
-}
-```
-
-## Demo
-![Run example](https://i.gyazo.com/01fbc539e9872593e0ff6bac7e954e6d.gif)
+BSD-style license (see LICENSE file)

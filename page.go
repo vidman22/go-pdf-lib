@@ -373,11 +373,39 @@ Parse:
 				}
 			}
 		}
+
+		// Fallback: try bfchar/bfrange lookups for single-byte codes even when
+		// outside the declared codespace. Some PDFs have malformed CMaps where
+		// the codespace range is too narrow but bfrange mappings exist.
+		text := raw[:1]
+		raw = raw[1:]
+
+		for _, bfchar := range m.bfchar {
+			if len(bfchar.orig) == 1 && bfchar.orig == text {
+				r = append(r, []rune(utf16Decode(bfchar.repl))...)
+				continue Parse
+			}
+		}
+
+		for _, bfrange := range m.bfrange {
+			if len(bfrange.lo) == 1 && bfrange.lo <= text && text <= bfrange.hi {
+				if bfrange.dst.Kind() == String {
+					s := bfrange.dst.RawString()
+					if bfrange.lo != text {
+						b := []byte(s)
+						b[len(b)-1] += text[len(text)-1] - bfrange.lo[len(bfrange.lo)-1]
+						s = string(b)
+					}
+					r = append(r, []rune(utf16Decode(s))...)
+					continue Parse
+				}
+			}
+		}
+
 		if DebugOn {
 			println("no code space found")
 		}
 		r = append(r, noRune)
-		raw = raw[1:]
 	}
 	return string(r)
 }
