@@ -94,6 +94,7 @@ func (r *Reader) GetStyledTexts() (sentences []Text, err error) {
 		var lastTextStyle Text
 		texts := p.Content().Text
 		for _, text := range texts {
+			text.PIndex = pageIndex - 1
 			if lastTextStyle == (Text{}) {
 				lastTextStyle = text
 				continue
@@ -510,6 +511,7 @@ type Text struct {
 	Y        float64 // the Y coordinate, in points, increasing bottom to top
 	W        float64 // the width of the text, in points
 	S        string  // the actual UTF-8 text
+	PIndex   int     // the page index
 }
 
 // A Rect represents a rectangle.
@@ -884,7 +886,7 @@ func (p Page) Content() Content {
 			}
 
 			Trm := matrix{{g.Tfs * g.Th, 0, 0}, {0, g.Tfs, 0}, {0, g.Trise, 1}}.mul(g.Tm).mul(g.CTM)
-			text = append(text, Text{f, Trm[0][0], Trm[2][0], Trm[2][1], w0 / 1000 * Trm[0][0], string(ch)})
+			text = append(text, Text{f, Trm[0][0], Trm[2][0], Trm[2][1], w0 / 1000 * Trm[0][0], string(ch), 0})
 
 			tx := w0/1000*g.Tfs + g.Tc
 			tx *= g.Th

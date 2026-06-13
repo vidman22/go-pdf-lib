@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	f, r, err := pdf.Open("./pdf_test.pdf")
+	f, r, err := pdf.Open("/Users/johnvidmar/Desktop/Code/go-pdf-lib/examples/read_text_with_styles/pdf_test.pdf")
 	if err != nil {
 		panic(err)
 	}
