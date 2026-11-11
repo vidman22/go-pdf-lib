@@ -12,7 +12,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/superpowerdotcom/go-pdf-lib"
+	"github.com/vidman22/go-pdf-lib"
 )
 
 var (

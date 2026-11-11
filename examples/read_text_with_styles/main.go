@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/superpowerdotcom/go-pdf-lib"
+	"github.com/vidman22/go-pdf-lib"
 )
 
 func main() {

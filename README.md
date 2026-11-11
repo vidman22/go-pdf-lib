@@ -29,6 +29,10 @@ The fix allows the library to find character mappings even when the PDF's intern
 
 ## Changes From Upstream
 
+**File: `page.go`** - Form XObject text extraction
+
+Many scanned/OCR PDFs put extractable text inside Form XObjects and paint them with the `Do` operator. `Content()` / `GetStyledTexts()` now follow those forms (with nested form depth limits), resolve fonts from the form's Resources, and insert spaces when glyph runs are separated on the same line. `Text.PIndex` is 1-based.
+
 **File: `page.go`** - Modified `cmap.Decode()` function
 
 Added a fallback that tries bfchar/bfrange lookups even when bytes are outside the declared codespace. This handles malformed CMaps that define mappings outside their declared codespace range.

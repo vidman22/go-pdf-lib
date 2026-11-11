@@ -82,8 +82,15 @@ func (r *Reader) GetPlainText() (reader io.Reader, err error) {
 	return &buf, nil
 }
 
-// GetStyledTexts returns list all sentences in an array, that are included styles
+// GetStyledTexts returns all styled text runs across pages.
+// Text.PIndex is a 1-based page number, matching Reader.Page.
 func (r *Reader) GetStyledTexts() (sentences []Text, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("pdf content: %v", rec)
+		}
+	}()
+
 	totalPage := r.NumPage()
 	for pageIndex := 1; pageIndex <= totalPage; pageIndex++ {
 		p := r.Page(pageIndex)
@@ -94,14 +101,19 @@ func (r *Reader) GetStyledTexts() (sentences []Text, err error) {
 		var lastTextStyle Text
 		texts := p.Content().Text
 		for _, text := range texts {
-			text.PIndex = pageIndex - 1
+			text.PIndex = pageIndex
 			if lastTextStyle == (Text{}) {
 				lastTextStyle = text
 				continue
 			}
 
 			if IsSameSentence(lastTextStyle, text) {
-				lastTextStyle.S = lastTextStyle.S + text.S
+				gap := text.X - (lastTextStyle.X + lastTextStyle.W)
+				if gap > lastTextStyle.FontSize*0.2 {
+					lastTextStyle.S += " "
+				}
+				lastTextStyle.S += text.S
+				lastTextStyle.W = text.X + text.W - lastTextStyle.X
 			} else {
 				sentences = append(sentences, lastTextStyle)
 				lastTextStyle = text
@@ -511,7 +523,7 @@ type Text struct {
 	Y        float64 // the Y coordinate, in points, increasing bottom to top
 	W        float64 // the width of the text, in points
 	S        string  // the actual UTF-8 text
-	PIndex   int     // the page index
+	PIndex   int     // 1-based page number, matching Reader.Page
 }
 
 // A Rect represents a rectangle.
@@ -856,46 +868,81 @@ func (p Page) walkTextBlocks(walker func(enc TextEncoding, x, y float64, s strin
 }
 
 // Content returns the page's content.
+// It follows Form XObjects referenced by the Do operator, which is how many
+// scanned/OCR PDFs store extractable text.
 func (p Page) Content() Content {
-	// Handle in case the content page is empty
 	if p.V.IsNull() || p.V.Key("Contents").Kind() == Null {
 		return Content{}
 	}
-	strm := p.V.Key("Contents")
-	var enc TextEncoding = &nopEncoder{}
 
-	var g = gstate{
-		Th:  1,
-		CTM: ident,
+	e := &contentExtractor{
+		resources: p.Resources(),
+		enc:       &nopEncoder{},
+		g: gstate{
+			Th:  1,
+			CTM: ident,
+		},
 	}
+	func() {
+		defer func() { _ = recover() }()
+		e.interpret(p.V.Key("Contents"), 0)
+	}()
+	return Content{e.text, e.rect}
+}
 
-	var text []Text
-	showText := func(s string) {
-		n := 0
-		decoded := enc.Decode(s)
-		for _, ch := range decoded {
-			var w0 float64
-			if n < len(s) {
-				w0 = g.Tf.Width(int(s[n]))
-			}
-			n++
+type contentExtractor struct {
+	resources Value
+	enc       TextEncoding
+	g         gstate
+	gstack    []gstate
+	text      []Text
+	rect      []Rect
+}
 
-			f := g.Tf.BaseFont()
-			if i := strings.Index(f, "+"); i >= 0 {
-				f = f[i+1:]
-			}
+func (e *contentExtractor) font(name string) Font {
+	return Font{e.resources.Key("Font").Key(name), nil}
+}
 
-			Trm := matrix{{g.Tfs * g.Th, 0, 0}, {0, g.Tfs, 0}, {0, g.Trise, 1}}.mul(g.Tm).mul(g.CTM)
-			text = append(text, Text{f, Trm[0][0], Trm[2][0], Trm[2][1], w0 / 1000 * Trm[0][0], string(ch), 0})
-
-			tx := w0/1000*g.Tfs + g.Tc
-			tx *= g.Th
-			g.Tm = matrix{{1, 0, 0}, {0, 1, 0}, {tx, 0, 1}}.mul(g.Tm)
+func (e *contentExtractor) showText(s string) {
+	n := 0
+	decoded := e.enc.Decode(s)
+	for _, ch := range decoded {
+		var w0 float64
+		if n < len(s) {
+			w0 = e.g.Tf.Width(int(s[n]))
 		}
-	}
+		n++
 
-	var rect []Rect
-	var gstack []gstate
+		f := e.g.Tf.BaseFont()
+		if i := strings.Index(f, "+"); i >= 0 {
+			f = f[i+1:]
+		}
+
+		Trm := matrix{{e.g.Tfs * e.g.Th, 0, 0}, {0, e.g.Tfs, 0}, {0, e.g.Trise, 1}}.mul(e.g.Tm).mul(e.g.CTM)
+		e.text = append(e.text, Text{f, Trm[0][0], Trm[2][0], Trm[2][1], w0 / 1000 * Trm[0][0], string(ch), 0})
+
+		tx := w0/1000*e.g.Tfs + e.g.Tc
+		tx *= e.g.Th
+		e.g.Tm = matrix{{1, 0, 0}, {0, 1, 0}, {tx, 0, 1}}.mul(e.g.Tm)
+	}
+}
+
+func formMatrix(xobj Value) matrix {
+	m := ident
+	mb := xobj.Key("Matrix")
+	if mb.Kind() != Array || mb.Len() != 6 {
+		return m
+	}
+	for i := 0; i < 6; i++ {
+		m[i/2][i%2] = mb.Index(i).Float64()
+	}
+	m[2][2] = 1
+	return m
+}
+
+const maxFormDepth = 16
+
+func (e *contentExtractor) interpret(strm Value, depth int) {
 	Interpret(strm, func(stk *Stack, op string) {
 		n := stk.Len()
 		args := make([]Value, n)
@@ -904,181 +951,201 @@ func (p Page) Content() Content {
 		}
 		switch op {
 		default:
-			// if DebugOn {
-			// 	fmt.Println(op, args)
-			// }
 			return
 
 		case "cm": // update g.CTM
 			if len(args) != 6 {
-				panic("bad g.Tm")
+				return
 			}
 			var m matrix
 			for i := 0; i < 6; i++ {
 				m[i/2][i%2] = args[i].Float64()
 			}
 			m[2][2] = 1
-			g.CTM = m.mul(g.CTM)
+			e.g.CTM = m.mul(e.g.CTM)
 
-		case "gs": // set parameters from graphics state resource
-			//gs := p.Resources().Key("ExtGState").Key(args[0].Name())
-			//font := gs.Key("Font")
-			//if font.Kind() == Array && font.Len() == 2 {
-			// if DebugOn {
-			// 	fmt.Println("FONT", font)
-			// }
-			//}
+		case "gs":
+		case "f":
+		case "g":
+		case "l":
+		case "m":
+		case "cs":
+		case "scn":
 
-		case "f": // fill
-		case "g": // setgray
-		case "l": // lineto
-		case "m": // moveto
-
-		case "cs": // set colorspace non-stroking
-		case "scn": // set color non-stroking
-
-		case "re": // append rectangle to path
+		case "re":
 			if len(args) != 4 {
-				panic("bad re")
+				return
 			}
 			x, y, w, h := args[0].Float64(), args[1].Float64(), args[2].Float64(), args[3].Float64()
-			rect = append(rect, Rect{Point{x, y}, Point{x + w, y + h}})
+			e.rect = append(e.rect, Rect{Point{x, y}, Point{x + w, y + h}})
 
-		case "q": // save graphics state
-			gstack = append(gstack, g)
+		case "q":
+			e.gstack = append(e.gstack, e.g)
 
-		case "Q": // restore graphics state
-			n := len(gstack) - 1
-			g = gstack[n]
-			gstack = gstack[:n]
+		case "Q":
+			if len(e.gstack) == 0 {
+				return
+			}
+			i := len(e.gstack) - 1
+			e.g = e.gstack[i]
+			e.gstack = e.gstack[:i]
 
-		case "BT": // begin text (reset text matrix and line matrix)
-			g.Tm = ident
-			g.Tlm = g.Tm
+		case "BT":
+			e.g.Tm = ident
+			e.g.Tlm = e.g.Tm
 
-		case "ET": // end text
+		case "ET":
 
-		case "T*": // move to start of next line
-			x := matrix{{1, 0, 0}, {0, 1, 0}, {0, -g.Tl, 1}}
-			g.Tlm = x.mul(g.Tlm)
-			g.Tm = g.Tlm
+		case "T*":
+			x := matrix{{1, 0, 0}, {0, 1, 0}, {0, -e.g.Tl, 1}}
+			e.g.Tlm = x.mul(e.g.Tlm)
+			e.g.Tm = e.g.Tlm
 
-		case "Tc": // set character spacing
+		case "Tc":
 			if len(args) != 1 {
-				panic("bad g.Tc")
+				return
 			}
-			g.Tc = args[0].Float64()
+			e.g.Tc = args[0].Float64()
 
-		case "TD": // move text position and set leading
+		case "TD":
 			if len(args) != 2 {
-				panic("bad Td")
+				return
 			}
-			g.Tl = -args[1].Float64()
+			e.g.Tl = -args[1].Float64()
 			fallthrough
-		case "Td": // move text position
+		case "Td":
 			if len(args) != 2 {
-				panic("bad Td")
+				return
 			}
 			tx := args[0].Float64()
 			ty := args[1].Float64()
 			x := matrix{{1, 0, 0}, {0, 1, 0}, {tx, ty, 1}}
-			g.Tlm = x.mul(g.Tlm)
-			g.Tm = g.Tlm
+			e.g.Tlm = x.mul(e.g.Tlm)
+			e.g.Tm = e.g.Tlm
 
-		case "Tf": // set text font and size
+		case "Tf":
 			if len(args) != 2 {
-				panic("bad TL")
+				return
 			}
 			f := args[0].Name()
-			g.Tf = p.Font(f)
-			enc = g.Tf.Encoder()
-			if enc == nil {
+			e.g.Tf = e.font(f)
+			e.enc = e.g.Tf.Encoder()
+			if e.enc == nil {
 				if DebugOn {
 					println("no cmap for", f)
 				}
-				enc = &nopEncoder{}
+				e.enc = &nopEncoder{}
 			}
-			g.Tfs = args[1].Float64()
+			e.g.Tfs = args[1].Float64()
 
-		case "\"": // set spacing, move to next line, and show text
+		case "\"":
 			if len(args) != 3 {
-				panic("bad \" operator")
+				return
 			}
-			g.Tw = args[0].Float64()
-			g.Tc = args[1].Float64()
+			e.g.Tw = args[0].Float64()
+			e.g.Tc = args[1].Float64()
 			args = args[2:]
 			fallthrough
-		case "'": // move to next line and show text
+		case "'":
 			if len(args) != 1 {
-				panic("bad ' operator")
+				return
 			}
-			x := matrix{{1, 0, 0}, {0, 1, 0}, {0, -g.Tl, 1}}
-			g.Tlm = x.mul(g.Tlm)
-			g.Tm = g.Tlm
+			x := matrix{{1, 0, 0}, {0, 1, 0}, {0, -e.g.Tl, 1}}
+			e.g.Tlm = x.mul(e.g.Tlm)
+			e.g.Tm = e.g.Tlm
 			fallthrough
-		case "Tj": // show text
+		case "Tj":
 			if len(args) != 1 {
-				panic("bad Tj operator")
+				return
 			}
-			showText(args[0].RawString())
+			e.showText(args[0].RawString())
 
-		case "TJ": // show text, allowing individual glyph positioning
+		case "TJ":
+			if len(args) == 0 {
+				return
+			}
 			v := args[0]
 			for i := 0; i < v.Len(); i++ {
 				x := v.Index(i)
 				if x.Kind() == String {
-					showText(x.RawString())
+					e.showText(x.RawString())
 				} else {
-					tx := -x.Float64() / 1000 * g.Tfs * g.Th
-					g.Tm = matrix{{1, 0, 0}, {0, 1, 0}, {tx, 0, 1}}.mul(g.Tm)
+					tx := -x.Float64() / 1000 * e.g.Tfs * e.g.Th
+					e.g.Tm = matrix{{1, 0, 0}, {0, 1, 0}, {tx, 0, 1}}.mul(e.g.Tm)
 				}
 			}
-			showText("\n")
+			e.showText("\n")
 
-		case "TL": // set text leading
+		case "TL":
 			if len(args) != 1 {
-				panic("bad TL")
+				return
 			}
-			g.Tl = args[0].Float64()
+			e.g.Tl = args[0].Float64()
 
-		case "Tm": // set text matrix and line matrix
+		case "Tm":
 			if len(args) != 6 {
-				panic("bad g.Tm")
+				return
 			}
 			var m matrix
 			for i := 0; i < 6; i++ {
 				m[i/2][i%2] = args[i].Float64()
 			}
 			m[2][2] = 1
-			g.Tm = m
-			g.Tlm = m
+			e.g.Tm = m
+			e.g.Tlm = m
 
-		case "Tr": // set text rendering mode
+		case "Tr":
 			if len(args) != 1 {
-				panic("bad Tr")
+				return
 			}
-			g.Tmode = int(args[0].Int64())
+			e.g.Tmode = int(args[0].Int64())
 
-		case "Ts": // set text rise
+		case "Ts":
 			if len(args) != 1 {
-				panic("bad Ts")
+				return
 			}
-			g.Trise = args[0].Float64()
+			e.g.Trise = args[0].Float64()
 
-		case "Tw": // set word spacing
+		case "Tw":
 			if len(args) != 1 {
-				panic("bad g.Tw")
+				return
 			}
-			g.Tw = args[0].Float64()
+			e.g.Tw = args[0].Float64()
 
-		case "Tz": // set horizontal text scaling
+		case "Tz":
 			if len(args) != 1 {
-				panic("bad Tz")
+				return
 			}
-			g.Th = args[0].Float64() / 100
+			e.g.Th = args[0].Float64() / 100
+
+		case "Do":
+			if len(args) != 1 || depth >= maxFormDepth {
+				return
+			}
+			name := args[0].Name()
+			xobj := e.resources.Key("XObject").Key(name)
+			if xobj.IsNull() || xobj.Key("Subtype").Name() != "Form" {
+				return
+			}
+
+			savedG := e.g
+			savedEnc := e.enc
+			savedRes := e.resources
+			savedStack := e.gstack
+			e.gstack = nil
+
+			e.g.CTM = formMatrix(xobj).mul(e.g.CTM)
+			if res := xobj.Key("Resources"); !res.IsNull() {
+				e.resources = res
+			}
+			e.interpret(xobj, depth+1)
+
+			e.g = savedG
+			e.enc = savedEnc
+			e.resources = savedRes
+			e.gstack = savedStack
 		}
 	})
-	return Content{text, rect}
 }
 
 // TextVertical implements sort.Interface for sorting
