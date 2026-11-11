@@ -334,6 +334,37 @@ type cmap struct {
 	bfchar  []bfchar
 }
 
+func bytesToCode(s string) uint64 {
+	var n uint64
+	for i := 0; i < len(s); i++ {
+		n = n<<8 | uint64(s[i])
+	}
+	return n
+}
+
+func codeToBytes(code uint64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	b := make([]byte, width)
+	for i := width - 1; i >= 0; i-- {
+		b[i] = byte(code)
+		code >>= 8
+	}
+	return string(b)
+}
+
+// mapBFRangeString maps src through a bfrange whose destination is a string.
+// PDF maps sequential source codes onto sequential destination codes as integers
+// of the destination string's length, not by bumping only the last byte.
+func mapBFRangeString(src, lo, dst string) string {
+	if dst == "" {
+		return dst
+	}
+	mapped := bytesToCode(dst) + (bytesToCode(src) - bytesToCode(lo))
+	return codeToBytes(mapped, len(dst))
+}
+
 func (m *cmap) Decode(raw string) (text string) {
 	var r []rune
 Parse:
@@ -352,12 +383,7 @@ Parse:
 					for _, bfrange := range m.bfrange { // check for matching bfrange
 						if len(bfrange.lo) == n && bfrange.lo <= text && text <= bfrange.hi {
 							if bfrange.dst.Kind() == String {
-								s := bfrange.dst.RawString()
-								if bfrange.lo != text { // value isn't at the beginning of the range so scale result
-									b := []byte(s)
-									b[len(b)-1] += text[len(text)-1] - bfrange.lo[len(bfrange.lo)-1] // increment last byte by difference
-									s = string(b)
-								}
+								s := mapBFRangeString(text, bfrange.lo, bfrange.dst.RawString())
 								r = append(r, []rune(utf16Decode(s))...)
 								continue Parse
 							}
@@ -403,12 +429,7 @@ Parse:
 		for _, bfrange := range m.bfrange {
 			if len(bfrange.lo) == 1 && bfrange.lo <= text && text <= bfrange.hi {
 				if bfrange.dst.Kind() == String {
-					s := bfrange.dst.RawString()
-					if bfrange.lo != text {
-						b := []byte(s)
-						b[len(b)-1] += text[len(text)-1] - bfrange.lo[len(bfrange.lo)-1]
-						s = string(b)
-					}
+					s := mapBFRangeString(text, bfrange.lo, bfrange.dst.RawString())
 					r = append(r, []rune(utf16Decode(s))...)
 					continue Parse
 				}
@@ -611,7 +632,8 @@ func (p Page) GetPlainText(fonts map[string]*Font) (result string, err error) {
 		case "BT": // add a space between text objects
 			showText("\n")
 		case "T*": // move to start of next line
-			showEncodedText("\n")
+			// Literal newline — do not run through ToUnicode (Identity-H is 2-byte).
+			showText("\n")
 		case "Tf": // set text font and size
 			if len(args) != 2 {
 				panic("bad TL")
@@ -1074,7 +1096,6 @@ func (e *contentExtractor) interpret(strm Value, depth int) {
 					e.g.Tm = matrix{{1, 0, 0}, {0, 1, 0}, {tx, 0, 1}}.mul(e.g.Tm)
 				}
 			}
-			e.showText("\n")
 
 		case "TL":
 			if len(args) != 1 {

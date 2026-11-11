@@ -29,6 +29,10 @@ The fix allows the library to find character mappings even when the PDF's intern
 
 ## Changes From Upstream
 
+**File: `page.go`** - Identity ToUnicode / mixed-script fix
+
+GlyphLessFont and similar Identity-H OCR fonts map `<0000>..<FFFF>` onto Unicode. Destination codes are sequential integers of the full destination string width; bumping only the last byte corrupted Greek and other non-Latin planes. `TJ` no longer feeds a raw `\n` through the CMap (that produced U+FFFD between words).
+
 **File: `page.go`** - Form XObject text extraction
 
 Many scanned/OCR PDFs put extractable text inside Form XObjects and paint them with the `Do` operator. `Content()` / `GetStyledTexts()` now follow those forms (with nested form depth limits), resolve fonts from the form's Resources, and insert spaces when glyph runs are separated on the same line. `Text.PIndex` is 1-based.
